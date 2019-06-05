@@ -13,17 +13,34 @@ ms.fasttrack: new
 
 [!INCLUDE [header](../_includes/header.md)]
 
-_Allow decoupling of backend processing from a frontend host, whilst making the backend processing asynchronous. 
-This pattern allows frontend applications to continue processing other tasks whilst maintaining the illusion of synchronous processing and also protecting the service from being overloaded due to extreme polling demands.
-It is also useful in situations where you wish to break apart front and back end services (such as the introduction of a processing queue in between the front and backend hosts) whilst maintaining a level of pseudo-synchronicity from the client frontend._
+## Context and Problem
 
-## Context and problem
+In modern application development it is very usual for client applications - often code running in a web-client (browser) - to depend on remote APIs to provide business logic and compose functionality. These APIs may be directly related to the application, or they may be shared services provided by a third party. 
+It is popular for client => API calls to take place over HTTP Application protocol and for these calls to follow REST and JSON semantics.
 
-It is often the case that you need to break apart the request and reply phases of an http(s) request for a longer running operation, but maintain the traffic flow over vanilla http(s). The actual processing of a long running request may be transmitted through the back end via a queue or other async messaging technology, but you need to express this delay in processing and provide the client with a reliable method to check for and obtain the result of the call over standard http semantics. 
+In many cases dependent APIs for a Client application will be engineered to respond very quickly (in the order of low tens of millisecond, not seconds). 
+
+Whilst the hosting stack, security components, the relative geographic location of caller and API, and network infrastructure can all add additional latency; the time for a client to solicit the response from a dependent API is usually short enough that requests can be made and the response returned efficiently and synchronously, on the same connection. 
+
+Note: Client application code will often make a synchronous API call in a non-blocking way, giving the appearance of asynchronous processing, which is generally recommended for IO bound, or blocking, operations.
+
+However, in some scenarios the work being undertaken by the API may be considered “long running” (order of minutes) which becomes problematic for traditional synchronous solicit response actions over HTTP; or, the application architecture requires that request and response phases be separated, often through use of a queue or message broker, to allow the client process to scale and prevent backend APIs from being overwhelmed.
+
+Many of the same considerations discussed for Client (browser) applications also apply for server to server REST API calls.
+
 
 ## Solution
 
-Respond to the caller with a http response payload representing the current state in time of the request, and a pointer to where the result will be when it is completed and an estimate of time till completion. Then the client can poll the pointer location at the interval suggested by the estimate to see if the request is completed and obtain the appropriate result when it is complete without a synchronous call blocking both the caller and called API. 
+There is no one size fits all solution or pattern for implementing asynchronous background processing and splitting request and response phases. 
+We will discuss one pattern, client pull, utilizing HTTP polling; polling is especially useful to client browser application scenarios where it is often very difficult to provide call-back endpoints and where use of long running connections and the libraries required to facilitate this robustly can add unwanted additional complexity. 
+- The client application will send a synchronous request to the API performing a long running operation, this can be considered an action which will instruct the API to begin. 
+- The API will respond as quickly as possible, synchronously with an acknowledgement. 
+- The response will also contain a location for which the client application can poll to receive the end result of the long running operation. 
+- Optionally, the response may also contain additional data (in the form of a response message header) – for example if the API knows that a given operation will average a given amount of time (e.g. 5minutes) it will be wasteful for the client to poll from the moment its acknowledged. Instead an “poll-after” property can be returned in the response with a duration after which the client should start polling.
+- Additional data might be a suggestion by the API for the callers polling interval. At most the polling interval duration will contribute to the overall duration between request and result being collected. But, over a long running operation the longer polling duration is much less wasteful of client and server resources.
+
+Note: Best practice is for the API to validate both the request and the action asked from a business rules perspective before starting the long running process and indicate the success on the synchronous response to the caller.
+
 
 ## Issues and considerations
 
@@ -37,6 +54,9 @@ Consider the following points when deciding how to implement this pattern:
 - If an error occurs, you should write the error away to the location described in the location header.
 - Not all solutions implement this in the same way and some services will include additional or alternate headers, for example Azure Resource Manager uses a modified version of this pattern.
 [See Azure Resource Manager Async Operations](https://docs.microsoft.com/en-us/azure/azure-resource-manager/resource-manager-async-operations)
+-	This pattern does not allow for the long running operation to be cancelled.
+-	This pattern is less suitable if responses need to be streamed back, or many results are to be collected and latency is important. In these scenarios a server push pattern may be more applicable
+
 
 ## When to use this pattern
 
