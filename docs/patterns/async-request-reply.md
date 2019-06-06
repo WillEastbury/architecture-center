@@ -6,7 +6,7 @@ ms.date: 06/06/2019
 pnp.series.title: Cloud Design Patterns
 pnp.pattern.categories: [design-implementation, messaging, performance-scalability]
 ms.author: wieastbu, begim
-ms.fasttrack: new
+ms.custom: fasttrack-new
 ---
 
 # Asynchronous Request-Reply Operations
