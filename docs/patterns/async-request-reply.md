@@ -71,7 +71,7 @@ This pattern might not be suitable:
 
 ## Examples
 
-![Image of the structure of an ASync Init logic app](/docs/patterns/_images/arr-Async-Request-Init.png)
+![Image of the structure of an ASync Init logic app](/docs/patterns/_images/async-request-reply.PNG)
 
 # [In Azure Functions](#tab/azfunc)
 
