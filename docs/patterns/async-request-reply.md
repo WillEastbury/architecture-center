@@ -69,18 +69,455 @@ This pattern might not be suitable:
 -	This particular implementation of this pattern does not allow for the long running operation to be cancelled, in order to allow the processing of cancel messages the back end service must support some form of cancellation instruction which is out of the scope of this document but could be within the scope of the service.  
 - As a substitute for pure event driven callbacks or WebHooks, use a service that is designed for asynchronous event notifications, such as Azure Event Grid.  
 
-## Example
+## Examples
+
+# [In Azure Functions](#tab/azfunc)
 
 Let's suppose we have a Function App with 2 http bound endpoints exposed and an Azure Storage Queue bound function to do the work :-
+## Http POST -> AsyncProcessingWorkAcceptor
+> This function needs to accept the work, put it into an envelope wrapper with some metadata, then pop it onto the queue for processing and generate the SAS signature and 202 response back to the client, the location returned should point at the location of the  AsyncOperationStatusChecker Endpoint.
 
-### 1. Http POST -> AsyncProcessingWorkAcceptor
-> This needs to accept the work, put it into an envelope wrapper with some metadata then pop it onto the queue for processing and generate the SAS signature and 202 response back to the client, the location should point at the AsyncOperationStatusChecker Endpoint.
+### Function Code 
+````csharp
+#r "Newtonsoft.json" 
+#r "Microsoft.WindowsAzure.Storage"
+ 
+using System;
+using System.Net;
+using Microsoft.WindowsAzure.Storage; 
+using Microsoft.WindowsAzure.Storage.Blob;
+using System.Collections.Generic;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Primitives;
+using Newtonsoft.Json; 
+using Newtonsoft.Json.Linq; 
 
-### Queue AsyncProcessingBackgroundWorker
-> This should pick the operation up off the queue
+// Accept the Request and pop the message onto the queue
+public static async Task<IActionResult> Run(HttpRequest req, ILogger log, CloudBlobContainer inputBlob, IAsyncCollector<string> OutMessage)
+{
+    
+    string reqid = Guid.NewGuid().ToString();
+    
+    string rqs = $"https://{Environment.GetEnvironmentVariable("WEBSITE_HOSTNAME")}/api/RequestStatus/{reqid}";
 
-### Http GET AsyncOperationStatusChecker
-> This needs to check if the response is complete, and if so return a valet-key to the actual response
+    string q = EnvelopeJSONBody(
+        await new StreamReader(req.Body).ReadToEndAsync(), 
+        new Dictionary<string, JToken>() {
+                { "RequestGUID", reqid },
+                { "RequestSubmittedAt", DateTime.Now },
+                { "RequestStatusURL", rqs}
+            }
+    );
+    
+    await OutMessage.AddAsync(q);  
+
+    CloudBlockBlob cbb = inputBlob.GetBlockBlobReference($"{reqid}.blobdata");
+
+    return (ActionResult) new AcceptedResult(rqs, $"Request Accepted for Processing{Environment.NewLine}ValetKey: {GenerateSASURIForBlob(cbb)}{Environment.NewLine}ProxyStatus: {rqs}");  
+    
+}
+
+public static string GenerateSASURIForBlob(CloudBlockBlob blob)
+{
+
+    SharedAccessBlobPolicy sasConstraints = new SharedAccessBlobPolicy();
+    sasConstraints.SharedAccessStartTime = DateTimeOffset.UtcNow.AddMinutes(-5);
+    sasConstraints.SharedAccessExpiryTime = DateTimeOffset.UtcNow.AddMinutes(10);
+    sasConstraints.Permissions = SharedAccessBlobPermissions.Read;
+
+    //Generate the shared access signature on the blob, setting the constraints directly on the signature.
+    string sasBlobToken = blob.GetSharedAccessSignature(sasConstraints);
+
+    //Return the URI string for the container, including the SAS token.
+    return blob.Uri + sasBlobToken;
+
+}
+
+// takes the input and adds an additional property to the JSON body and returns a serialized string
+public static string AppendGUIDToJSONBody(string inputjson, JToken propValue, string propID)
+{
+   
+    JObject job = JObject.Parse(inputjson); 
+    job.Add(propID, propValue);
+    return job.ToString();
+
+}
+
+// https://en.wikipedia.org/wiki/Decorator_pattern#Overview
+// takes the input and augments the object with an additional set of properties to the JSON body as am additional header level property (EnvelopeProperties)
+// and returns a serialized string with the original object as the root
+public static string DecorateJSONBody(string inputjson, Dictionary<string, JToken> HeaderProperties)
+{
+
+    JObject job = JObject.Parse(inputjson); 
+    job.Add("EnvelopeProperties",JObject.FromObject(HeaderProperties)); 
+    return job.ToString();
+
+}
+
+// https://www.enterpriseintegrationpatterns.com/patterns/messaging/EnvelopeWrapper.html
+// Classic 'Envelope' , takes the input and augments the object with an additional set of properties to the JSON body as am additional header level property (EnvelopeProperties) 
+// whilst appending the original object as a new property called 'requestobject' and returns a serialized string
+public static string EnvelopeJSONBody(string inputjson, Dictionary<string, JToken> HeaderProperties)
+{
+    
+    JObject job = new JObject();
+    job.Add("RequestObject", JObject.Parse(inputjson));
+    job.Add("EnvelopeProperties",JObject.FromObject(HeaderProperties)); 
+    return job.ToString();
+
+}
+
+// To get to the original object, deserialize it with the correct class
+public class CustomerPOCO
+{
+    public string id;
+    public string customername;
+
+}
+
+// Or make it inherit and bring in the headers into the object
+public class CustomerPOCOwithMessageHeaders : CustomerPOCO {
+
+    public string RequestGUID {get;set;}
+    public string RequestSubmittedAt {get;set;}
+    public string RequestStatusURL {get;set;}
+
+    // + Your other class POCO fields
+    // public string id;
+    // public string customername;
+    
+}
+
+public class EnvelopedMessage {
+
+    public EnvelopeProperties envelopeProperties {get;set;}
+    public string RequestObject {get;set;}
+
+}
+
+// To get the headers deserialize it with decoratedmessage.
+public class DecoratedMessage {
+
+    public EnvelopeProperties envelopeProperties {get;set;}
+    
+}
+
+// To get to the original object, deserialize it with the correct class, to get both, inherit your POCO base class from DecoratedMessage
+public class CustomerPOCODecoratedMessage : DecoratedMessage {
+
+    public string id;
+    public string customername;
+
+}
+
+public class EnvelopeProperties {
+
+    public string RequestGUID {get;set;}
+    public string RequestSubmittedAt {get;set;}
+    public string RequestStatusURL {get;set;}
+}
+````
+### Function Binding
+````json
+{
+  "bindings": [
+    {
+      "authLevel": "anonymous",
+      "name": "req",
+      "type": "httpTrigger",
+      "direction": "in",
+      "methods": [
+        "post"
+      ]
+    },
+    {
+      "name": "$return",
+      "type": "http",
+      "direction": "out"
+    },
+    {
+      "type": "queue",
+      "name": "OutMessage",
+      "queueName": "outqueue",
+      "connection": "AzureWebJobsStorage",
+      "direction": "out"
+    },
+    {
+      "type": "blob",
+      "name": "inputBlob",
+      "path": "data/blob.blob",
+      "connection": "AzureWebJobsStorage",
+      "direction": "in"
+    }
+  ]
+}
+````
+
+## Queue AsyncProcessingBackgroundWorker
+> This should pick the operation up off the queue. remove the payload from the envelope, do something meaningful with it, then write away the end result to the provided blob SAS signature.
+
+````csharp
+#r "Newtonsoft.json"
+#r "Microsoft.WindowsAzure.Storage"
+ 
+using System;
+using Microsoft.WindowsAzure.Storage; 
+using Microsoft.WindowsAzure.Storage.Blob;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+
+// Perform some kind of background processing here and write the result to a blob created in the data folder with a guid as the blob name
+
+public static void Run(EnvelopedMessage<ThisPayload> myQueueItem, ILogger log, CloudBlobContainer inputBlob)
+{
+
+    // Perform an actual action against the blob data source for the async readers to be able to check against.
+    // This is where your actual service worker processing will be performed
+
+    CloudBlockBlob cbb = inputBlob.GetBlockBlobReference($"{myQueueItem.envelopeProperties.RequestGUID}.blobdata");
+
+    // Now write away the process 
+    cbb.UploadTextAsync(JsonConvert.SerializeObject(myQueueItem.RequestObject));
+          
+}
+
+public class EnvelopedMessage<T> {
+
+    public EnvelopeProperties envelopeProperties {get;set;}
+    public T RequestObject {get;set;}
+
+}
+
+public class EnvelopeProperties {  
+
+    public string RequestGUID {get;set;}
+    public string RequestSubmittedAt {get;set;}
+    public string RequestStatusURL {get;set;}
+
+}
+
+public class ThisPayload {
+
+    public string Id {get;set;}
+    public string name {get;set;} 
+
+}
+````
+
+````json
+{
+  "bindings": [
+    {
+      "name": "myQueueItem",
+      "type": "queueTrigger",
+      "direction": "in",
+      "queueName": "outqueue",
+      "connection": "AzureWebJobsStorage"
+    },
+    {
+      "type": "blob",
+      "name": "inputBlob",
+      "path": "data",
+      "connection": "AzureWebJobsStorage",
+      "direction": "in"
+    }
+  ]
+}
+````
+
+## Http GET AsyncOperationStatusChecker
+> This needs to check if the response is complete and if so either return a valet-key to the actual response OR redirect the user to the address in the valet key, if the response is not completed, then the service should return a 202 accepted link back to itself in the http Location header, with an expectation of the time to completion in the http Retry-After header.
+
+````csharp
+#r "Newtonsoft.json"
+#r "Microsoft.WindowsAzure.Storage"
+ 
+using System;
+using System.Net;
+using Microsoft.WindowsAzure.Storage; 
+using Microsoft.WindowsAzure.Storage.Blob;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq; 
+using Microsoft.AspNetCore.Mvc; 
+using Microsoft.Extensions.Primitives;
+
+public static async Task<IActionResult> Run(HttpRequest req, CloudBlockBlob inputBlob, string thisGUID, ILogger log)
+{ 
+
+    OnCompleteEnum OnComplete = Enum.Parse<OnCompleteEnum>(req.Query["OnComplete"].FirstOrDefault() ?? "Redirect");
+    OnPendingEnum OnPending = Enum.Parse<OnPendingEnum>(req.Query["OnPending"].FirstOrDefault() ?? "Accepted");
+
+    log.LogInformation($"C# HTTP trigger function processed a request for status on {thisGUID} - OnComplete {OnComplete} - OnPending {OnPending}");
+
+    // ** Check to see if the blob is present **
+    if (await inputBlob.ExistsAsync())
+    {
+        // ** If it's present, depending on the value of the optional "OnComplete" parameter choose what to do. **
+        // Default (OnComplete not present or set to "Redirect") is to return a 302 redirect with the location of a SAS for the document in the location field.   
+        // If OnComplete is present and set to "Stream", the function should return the response inline.
+
+        log.LogInformation($"Blob {thisGUID}.blobdata exists, hooray!");
+
+        switch(OnComplete)
+        {
+            case OnCompleteEnum.Redirect:
+            {
+                // Awesome, let's use the valet key pattern to offload the download via a SAS URI to blob storage
+                return (ActionResult) new RedirectResult(GenerateSASURIForBlob(inputBlob));
+            }
+
+            case OnCompleteEnum.Stream:
+            {
+               // If the action is set to return the file then lets download it and return it back
+               // ToDo: this operation is horrible for larger files, we should use a stream to minimize RAM usage.
+               return (ActionResult) new OkObjectResult(await inputBlob.DownloadTextAsync());
+            }
+            
+            default:
+            {
+                throw new InvalidOperationException("How did we get here??");
+            }
+        }
+    }
+    else   
+    {
+        // ** If it's NOT present, then we need to back off, so depending on the value of the optional "OnPending" parameter choose what to do. **
+        // Default (OnPending not present or set to "Accepted") is to return a 202 accepted with the location and Retry-After Header set to 5 seconds from now.
+        // If OnPending is present and set to "Synchronous" then loop and keep retrying via an exponential backoff in the function until we time out.
+
+        string rqs = $"https://{Environment.GetEnvironmentVariable("WEBSITE_HOSTNAME")}/api/RequestStatus/{thisGUID}";
+
+        log.LogInformation($"Blob {thisGUID}.blob does not exist, still working ! result will be at {rqs}");
+        
+
+        switch(OnPending)
+        {
+            case OnPendingEnum.Accepted:
+            {
+                // This SHOULD RETURN A 202 accepted 
+                return (ActionResult) new AcceptedResult(){ Location = rqs};
+            }
+
+            case OnPendingEnum.Synchronous:
+            {
+                // This should back off and retry returning the data after a period of time timing out when the backoff period hits one minute
+                
+                int backoff = 250; 
+
+                while (! await inputBlob.ExistsAsync() && backoff < 64000)
+                {
+                    log.LogInformation($"Synchronous mode {thisGUID}.blob - retrying in {backoff} ms");
+                    backoff = backoff * 2; 
+                    await Task.Delay(backoff);
+                    
+                }
+
+                if (await inputBlob.ExistsAsync())
+                {
+                    switch(OnComplete)
+                    {
+                        case OnCompleteEnum.Redirect:
+                        {
+                            log.LogInformation($"Synchronous Redirect mode {thisGUID}.blob - completed after {backoff} ms");
+                            // Awesome, let's use the valet key pattern to offload the download via a SAS URI to blob storage
+                            return (ActionResult) new RedirectResult(GenerateSASURIForBlob(inputBlob));
+                        }
+
+                        case OnCompleteEnum.Stream:
+                        {
+                            log.LogInformation($"Synchronous Stream mode {thisGUID}.blob - completed after {backoff} ms");
+                            // If the action is set to return the file then lets download it and return it back
+                            // ToDo: this operation is horrible for larger files, we should use a stream to minimize RAM usage.
+                            return (ActionResult) new OkObjectResult(await inputBlob.DownloadTextAsync());
+                        }
+                        
+                        default:
+                        {
+                            throw new InvalidOperationException("How did we get here??");
+                        }
+                    }
+                }
+                else
+                {  
+                    log.LogInformation($"Synchronous mode {thisGUID}.blob - NOT FOUND after timeout {backoff} ms");
+                    return (ActionResult) new NotFoundResult();
+
+                }              
+                         
+            }
+
+            default:
+            {
+                throw new InvalidOperationException("How did we get here??");
+            }
+        }
+    }
+}
+
+public static string GenerateSASURIForBlob(CloudBlockBlob blob)
+{
+
+    SharedAccessBlobPolicy sasConstraints = new SharedAccessBlobPolicy();
+    sasConstraints.SharedAccessStartTime = DateTimeOffset.UtcNow.AddMinutes(-5);
+    sasConstraints.SharedAccessExpiryTime = DateTimeOffset.UtcNow.AddMinutes(10);
+    sasConstraints.Permissions = SharedAccessBlobPermissions.Read;
+
+    //Generate the shared access signature on the blob, setting the constraints directly on the signature.
+    string sasBlobToken = blob.GetSharedAccessSignature(sasConstraints);
+
+    //Return the URI string for the container, including the SAS token.
+    return blob.Uri + sasBlobToken;
+
+}
+
+public enum OnCompleteEnum {
+
+    Redirect,
+    Stream
+
+}
+
+public enum OnPendingEnum {
+
+    Accepted,
+    Synchronous
+
+}
+````
+
+````json
+{
+  "bindings": [
+    {
+      "authLevel": "anonymous",
+      "name": "req",
+      "type": "httpTrigger",
+      "direction": "in",
+      "methods": [
+        "get"
+      ],
+      "route": "RequestStatus/{thisGUID}"
+    },
+    {
+      "name": "$return",
+      "type": "http",
+      "direction": "out"
+    },
+    {
+      "type": "blob",
+      "name": "inputBlob",
+      "path": "data/{thisGUID}.blobdata",
+      "connection": "AzureWebJobsStorage",
+      "direction": "in"
+    }
+  ]
+}
+````
+
+# [In Logic Apps](#tab/logicapps)
+
+---
 
 ## Next steps
 
