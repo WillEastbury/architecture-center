@@ -71,13 +71,17 @@ This pattern might not be suitable:
 
 ## Examples
 
+![Image of the structure of an ASync Init logic app](../_images/arr-ASync-Request-Init.png)
+
 # [In Azure Functions](#tab/azfunc)
 
 Let's suppose we have a Function App with 2 http bound endpoints exposed and an Azure Storage Queue bound function to do the work :-
+
+
+
 ## Http POST -> AsyncProcessingWorkAcceptor
 > This function needs to accept the work, put it into an envelope wrapper with some metadata, then pop it onto the queue for processing and generate the SAS signature and 202 response back to the client, the location returned should point at the location of the  AsyncOperationStatusChecker Endpoint.
 
-### Function Code 
 ````csharp
 #r "Newtonsoft.json" 
 #r "Microsoft.WindowsAzure.Storage"
@@ -218,7 +222,7 @@ public class EnvelopeProperties {
     public string RequestStatusURL {get;set;}
 }
 ````
-### Function Binding
+
 ````json
 {
   "bindings": [
@@ -255,6 +259,7 @@ public class EnvelopeProperties {
 ````
 
 ## Queue AsyncProcessingBackgroundWorker
+
 > This should pick the operation up off the queue. remove the payload from the envelope, do something meaningful with it, then write away the end result to the provided blob SAS signature.
 
 ````csharp
@@ -521,7 +526,7 @@ public enum OnPendingEnum {
 
 > This function needs to accept the work, put it into an envelope wrapper with some metadata, then pop it onto the queue for processing and generate the SAS signature and 202 response back to the client, the location returned should point at the location of the  AsyncOperationStatusChecker Endpoint.
 
-![Image of the structure of an ASync Init logic app](./_images/arr-ASync-Request-Init.png)
+![Image of the structure of an ASync Init logic app](../_images/arr-ASync-Request-Init.png)
 ````json
 {
     "$connections": {
@@ -757,7 +762,7 @@ public enum OnPendingEnum {
 
 > This should pick the operation up off the queue. remove the payload from the envelope, do something meaningful with it, then write away the end result to the provided blob SAS signature.
 
-![Image of the structure of an ASync Processing logic app](./_images/arr-ASync-Worker.png)
+![Image of the structure of an ASync Processing logic app](../_images/arr-ASync-Worker.png)
 
 ````json
 {
@@ -977,7 +982,7 @@ public enum OnPendingEnum {
 ### http GET AsyncResponse
 > This needs to check if the response is complete and if so either return a valet-key to the actual response OR redirect the user to the address in the valet key, if the response is not completed, then the service should return a 202 accepted link back to itself in the http Location header, with an expectation of the time to completion in the http Retry-After header.
 
-![Image of the structure of an ASync Request Init logic app](./_images/arr-ASync-Request-Init.png)
+![Image of the structure of an ASync Request Init logic app](../_images/arr-ASync-Request-Init.png)
 
 ````json
 {
