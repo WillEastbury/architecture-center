@@ -517,6 +517,609 @@ public enum OnPendingEnum {
 
 # [In Logic Apps](#tab/logicapps)
 
+## http POST AsyncRequestInit
+
+> This function needs to accept the work, put it into an envelope wrapper with some metadata, then pop it onto the queue for processing and generate the SAS signature and 202 response back to the client, the location returned should point at the location of the  AsyncOperationStatusChecker Endpoint.
+
+![Image of the structure of an ASync Init logic app](./_images/arr-ASync-Request-Init.png)
+````json
+{
+    "$connections": {
+        "value": {
+            "azurequeues": {
+                "connectionId": "/subscriptions/XXXXXXXX-2ab5-4460-ba7d-d34b5135c24a/resourceGroups/Async_Demos/providers/Microsoft.Web/connections/azurequeues",
+                "connectionName": "azurequeues",
+                "id": "/subscriptions/XXXXXXXX-2ab5-4460-ba7d-d34b5135c24a/providers/Microsoft.Web/locations/ukwest/managedApis/azurequeues"
+            }
+        }
+    },
+    "definition": {
+        "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+        "actions": {
+            "Condition": {
+                "actions": {
+                    "HTTP": {
+                        "inputs": {
+                            "method": "GET",
+                            "uri": "@variables('ASyncLogicAppAddress')"
+                        },
+                        "operationOptions": "DisableAsyncPattern",
+                        "runAfter": {},
+                        "type": "Http"
+                    },
+                    "Response": {
+                        "inputs": {
+                            "body": "@body('HTTP')",
+                            "headers": {
+                                "location": "@{outputs('HTTP')['headers']['location']}",
+                                "retry-after": "@{outputs('HTTP')['headers']['retry-after']}"
+                            },
+                            "statusCode": "@outputs('HTTP')['statusCode']"
+                        },
+                        "kind": "Http",
+                        "runAfter": {
+                            "HTTP": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "Response"
+                    }
+                },
+                "else": {
+                    "actions": {
+                        "HTTP_2": {
+                            "inputs": {
+                                "method": "GET",
+                                "uri": "@variables('ASyncLogicAppAddress')"
+                            },
+                            "limit": {
+                                "timeout": "PT120S"
+                            },
+                            "runAfter": {},
+                            "type": "Http"
+                        },
+                        "Response_2": {
+                            "inputs": {
+                                "body": "@body('HTTP_2')",
+                                "headers": {
+                                    "location": "@{outputs('HTTP_2')['headers']['location']}"
+                                },
+                                "statusCode": "@outputs('HTTP_2')['statusCode']"
+                            },
+                            "kind": "Http",
+                            "runAfter": {
+                                "HTTP_2": [
+                                    "Succeeded"
+                                ]
+                            },
+                            "type": "Response"
+                        }
+                    }
+                },
+                "expression": {
+                    "and": [
+                        {
+                            "equals": [
+                                "@variables('sync')",
+                                "false"
+                            ]
+                        }
+                    ]
+                },
+                "runAfter": {
+                    "Set_variable": [
+                        "Succeeded",
+                        "Failed",
+                        "Skipped"
+                    ]
+                },
+                "type": "If"
+            },
+            "Create_a_new_queue": {
+                "inputs": {
+                    "host": {
+                        "connection": {
+                            "name": "@parameters('$connections')['azurequeues']['connectionId']"
+                        }
+                    },
+                    "method": "put",
+                    "path": "/putQueue",
+                    "queries": {
+                        "queueName": "@{toLower(concat(triggerOutputs()['relativePathParameters']['RequestQueue'],triggerOutputs()['relativePathParameters']['ObjectType']))}"
+                    }
+                },
+                "runAfter": {
+                    "Set_The_Child_Logic_App_Address": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "ApiConnection"
+            },
+            "Gimme_a_GUID": {
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "GUID",
+                            "type": "String",
+                            "value": "@{guid()}"
+                        }
+                    ]
+                },
+                "runAfter": {},
+                "type": "InitializeVariable"
+            },
+            "Init_Sync_Variable": {
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "sync",
+                            "type": "String",
+                            "value": "false"
+                        }
+                    ]
+                },
+                "runAfter": {
+                    "Put_a_message_on_a_queue": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "InitializeVariable"
+            },
+            "Initialize_variable": {
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "payload",
+                            "type": "String",
+                            "value": "@{addProperty(json(triggerBody()),'RequestGUID',variables('GUID'))}"
+                        }
+                    ]
+                },
+                "runAfter": {
+                    "Create_a_new_queue": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "InitializeVariable"
+            },
+            "Put_a_message_on_a_queue": {
+                "inputs": {
+                    "body": "@{json(variables('payload'))}",
+                    "host": {
+                        "connection": {
+                            "name": "@parameters('$connections')['azurequeues']['connectionId']"
+                        }
+                    },
+                    "method": "post",
+                    "path": "/@{encodeURIComponent(toLower(concat(triggerOutputs()['relativePathParameters']['RequestQueue'],triggerOutputs()['relativePathParameters']['ObjectType'])))}/messages"
+                },
+                "runAfter": {
+                    "Initialize_variable": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "ApiConnection"
+            },
+            "Set_The_Child_Logic_App_Address": {
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "ASyncLogicAppAddress",
+                            "type": "String",
+                            "value": "https://prod-19.ukwest.logic.azure.com/workflows/XXXXXXXXXXXX/triggers/manual/paths/invoke/@{variables('GUID')}?api-version=2016-10-01&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=XXXXXXXXXXXBq-j6yNch6j5A0ukc8FQSmSW2rok"
+                        }
+                    ]
+                },
+                "runAfter": {
+                    "Gimme_a_GUID": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "InitializeVariable"
+            },
+            "Set_variable": {
+                "inputs": {
+                    "name": "sync",
+                    "value": "@{coalesce(triggerOutputs()?['Headers']?['Synchronous'],'false')}"
+                },
+                "runAfter": {
+                    "Init_Sync_Variable": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "SetVariable"
+            }
+        },
+        "contentVersion": "1.0.0.0",
+        "outputs": {},
+        "parameters": {
+            "$connections": {
+                "defaultValue": {},
+                "type": "Object"
+            }
+        },
+        "triggers": {
+            "manual": {
+                "inputs": {
+                    "method": "POST",
+                    "relativePath": "/{RequestQueue}/{ObjectType}",
+                    "schema": {}
+                },
+                "kind": "Http",
+                "type": "Request"
+            }
+        }
+    }
+}
+````
+
+### Queue Initiated ASync_Worker_Processing
+
+> This should pick the operation up off the queue. remove the payload from the envelope, do something meaningful with it, then write away the end result to the provided blob SAS signature.
+
+![Image of the structure of an ASync Processing logic app](./_images/arr-ASync-Worker.png)
+
+````json
+{
+    "$connections": {
+        "value": {
+            "azureblob": {
+                "connectionId": "/subscriptions/XXXXXXX-2ab5-4460-ba7d-d34b5135c24a/resourceGroups/Async_Demos/providers/Microsoft.Web/connections/azureblob",
+                "connectionName": "azureblob",
+                "id": "/subscriptions/XXXXXXX-2ab5-4460-ba7d-d34b5135c24a/providers/Microsoft.Web/locations/ukwest/managedApis/azureblob"
+            },
+            "azurequeues": {
+                "connectionId": "/subscriptions/XXXXXXX-2ab5-4460-ba7d-d34b5135c24a/resourceGroups/Async_Demos/providers/Microsoft.Web/connections/azurequeues",
+                "connectionName": "azurequeues",
+                "id": "/subscriptions/XXXXXXX-2ab5-4460-ba7d-d34b5135c24a/providers/Microsoft.Web/locations/ukwest/managedApis/azurequeues"
+            }
+        }
+    },
+    "definition": {
+        "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+        "actions": {
+            "Compose": {
+                "inputs": {
+                    "InsertedID": "no-op",
+                    "etag": "@{guid()}"
+                },
+                "runAfter": {
+                    "Parse_JSON": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Compose"
+            },
+            "Create_blob": {
+                "inputs": {
+                    "body": "@outputs('Compose')",
+                    "headers": {
+                        "Content-Type": "application/json"
+                    },
+                    "host": {
+                        "connection": {
+                            "name": "@parameters('$connections')['azureblob']['connectionId']"
+                        }
+                    },
+                    "method": "post",
+                    "path": "/datasets/default/files",
+                    "queries": {
+                        "folderPath": "/data",
+                        "name": "@body('Parse_JSON')?['RequestGUID']",
+                        "queryParametersSingleEncoded": true
+                    }
+                },
+                "runAfter": {
+                    "Compose": [
+                        "Succeeded"
+                    ]
+                },
+                "runtimeConfiguration": {
+                    "contentTransfer": {
+                        "transferMode": "Chunked"
+                    }
+                },
+                "type": "ApiConnection"
+            },
+            "Delete_message": {
+                "inputs": {
+                    "host": {
+                        "connection": {
+                            "name": "@parameters('$connections')['azurequeues']['connectionId']"
+                        }
+                    },
+                    "method": "delete",
+                    "path": "/@{encodeURIComponent('requestqueueobjecttype')}/messages/@{encodeURIComponent(triggerBody()?['MessageId'])}",
+                    "queries": {
+                        "popreceipt": "@triggerBody()?['PopReceipt']"
+                    }
+                },
+                "runAfter": {
+                    "Create_blob": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "ApiConnection"
+            },
+            "Failed_Processing_-_move_to_secondary_queue": {
+                "actions": {
+                    "Create_failed_queue": {
+                        "inputs": {
+                            "host": {
+                                "connection": {
+                                    "name": "@parameters('$connections')['azurequeues']['connectionId']"
+                                }
+                            },
+                            "method": "put",
+                            "path": "/putQueue",
+                            "queries": {
+                                "queueName": "requestqueueobjecttypefailed"
+                            }
+                        },
+                        "runAfter": {},
+                        "type": "ApiConnection"
+                    },
+                    "Delete_message_2": {
+                        "inputs": {
+                            "host": {
+                                "connection": {
+                                    "name": "@parameters('$connections')['azurequeues']['connectionId']"
+                                }
+                            },
+                            "method": "delete",
+                            "path": "/@{encodeURIComponent('requestqueueobjecttype')}/messages/@{encodeURIComponent(triggerBody()?['MessageId'])}",
+                            "queries": {
+                                "popreceipt": "@triggerBody()?['PopReceipt']"
+                            }
+                        },
+                        "runAfter": {
+                            "Put_a_message_on_a_queue": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "ApiConnection"
+                    },
+                    "Put_a_message_on_a_queue": {
+                        "inputs": {
+                            "body": "@triggerBody()?['MessageText']",
+                            "host": {
+                                "connection": {
+                                    "name": "@parameters('$connections')['azurequeues']['connectionId']"
+                                }
+                            },
+                            "method": "post",
+                            "path": "/@{encodeURIComponent('requestqueueobjecttypefailed')}/messages"
+                        },
+                        "runAfter": {
+                            "Create_failed_queue": [
+                                "Succeeded"
+                            ]
+                        },
+                        "type": "ApiConnection"
+                    }
+                },
+                "runAfter": {
+                    "Create_blob": [
+                        "Failed",
+                        "Skipped",
+                        "TimedOut"
+                    ]
+                },
+                "type": "Scope"
+            },
+            "Parse_JSON": {
+                "inputs": {
+                    "content": "@triggerBody()?['MessageText']",
+                    "schema": {
+                        "properties": {
+                            "OwnerRegion": {
+                                "type": "string"
+                            },
+                            "PayloadContent": {
+                                "type": "string"
+                            },
+                            "PayloadType": {
+                                "type": "string"
+                            },
+                            "ProcessedAt": {
+                                "type": "string"
+                            },
+                            "ProcessedUserEmail": {
+                                "type": "string"
+                            },
+                            "RequestGUID": {
+                                "type": "string"
+                            },
+                            "Source": {
+                                "type": "string"
+                            }
+                        },
+                        "type": "object"
+                    }
+                },
+                "runAfter": {},
+                "type": "ParseJson"
+            }
+        },
+        "contentVersion": "1.0.0.0",
+        "outputs": {},
+        "parameters": {
+            "$connections": {
+                "defaultValue": {},
+                "type": "Object"
+            }
+        },
+        "triggers": {
+            "Check_the_queue_every_5_seconds": {
+                "inputs": {
+                    "host": {
+                        "connection": {
+                            "name": "@parameters('$connections')['azurequeues']['connectionId']"
+                        }
+                    },
+                    "method": "get",
+                    "path": "/@{encodeURIComponent('requestqueueobjecttype')}/message_trigger",
+                    "queries": {
+                        "visibilitytimeout": "15"
+                    }
+                },
+                "recurrence": {
+                    "frequency": "Second",
+                    "interval": 5
+                },
+                "splitOn": "@triggerBody()?['QueueMessagesList']?['QueueMessage']",
+                "type": "ApiConnection"
+            }
+        }
+    }
+}
+````
+### http GET AsyncResponse
+> This needs to check if the response is complete and if so either return a valet-key to the actual response OR redirect the user to the address in the valet key, if the response is not completed, then the service should return a 202 accepted link back to itself in the http Location header, with an expectation of the time to completion in the http Retry-After header.
+
+![Image of the structure of an ASync Request Init logic app](./_images/arr-ASync-Request-Init.png)
+
+````json
+{
+    "$connections": {
+        "value": {
+            "azureblob": {
+                "connectionId": "/subscriptions/XXXXXXX-2ab5-4460-ba7d-d34b5135c24a/resourceGroups/Async_Demos/providers/Microsoft.Web/connections/azureblob",
+                "connectionName": "azureblob",
+                "id": "/subscriptions/XXXXXXX-2ab5-4460-ba7d-d34b5135c24a/providers/Microsoft.Web/locations/ukwest/managedApis/azureblob"
+            }
+        }
+    },
+    "definition": {
+        "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+        "actions": {
+            "Completed_Processing_-_Return_Redirect_to_SAS_Url": {
+                "inputs": {
+                    "body": {
+                        "ProcessingStatus": "CompleteShouldRedirect",
+                        "Status": "Processing Complete, follow the location header to download the resource",
+                        "location": "@{body('Create_SAS_URI_by_path')?['WebUrl']}"
+                    },
+                    "headers": {
+                        "ProcessingStatus": "ShouldRedirect",
+                        "location": "@body('Create_SAS_URI_by_path')?['WebUrl']"
+                    },
+                    "statusCode": 201
+                },
+                "kind": "Http",
+                "runAfter": {
+                    "Create_SAS_URI_by_path": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Response"
+            },
+            "Create_SAS_URI_by_path": {
+                "inputs": {
+                    "body": {
+                        "AccessProtocol": "HttpsOnly",
+                        "ExpiryTime": "@{addMinutes(utcNow(),10)}",
+                        "Permissions": "Read"
+                    },
+                    "host": {
+                        "connection": {
+                            "name": "@parameters('$connections')['azureblob']['connectionId']"
+                        }
+                    },
+                    "method": "post",
+                    "path": "/datasets/default/CreateSharedLinkByPath",
+                    "queries": {
+                        "path": "/data/@{triggerOutputs()['relativePathParameters']['filename']}"
+                    }
+                },
+                "runAfter": {
+                    "Set_Retry_Time": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "ApiConnection"
+            },
+            "Not_completed,_return_202_with_location_and_retry-after_headers": {
+                "inputs": {
+                    "body": {
+                        "ProcessingStatus": "ProcessingInProgress",
+                        "Status": "Processing In Progress, please come back to this URL after the retry-after time has expired (in @{variables('retry')} seconds).",
+                        "location": "@{body('Create_SAS_URI_by_path')?['WebUrl']}",
+                        "retry-after": "@{variables('retry')}"
+                    },
+                    "headers": {
+                        "ProcessingStatus": "ProcessingInProgressRetryAfter",
+                        "location": "https://prod-19.ukwest.logic.azure.com/workflows/XXXXXXXXXXXXXXXXXXXXX/triggers/manual/paths/invoke/@{triggerOutputs()['relativePathParameters']['filename']}?api-version=2016-10-01&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=XXXXXXXXXXXXXXq-j6yNch6j5A0ukc8FQSmSW2rok",
+                        "retry-after": "@{variables('retry')}"
+                    },
+                    "statusCode": 202
+                },
+                "kind": "Http",
+                "runAfter": {
+                    "Create_SAS_URI_by_path": [
+                        "Failed"
+                    ]
+                },
+                "type": "Response"
+            },
+            "Set_Retry_Time": {
+                "inputs": {
+                    "variables": [
+                        {
+                            "name": "retry",
+                            "type": "String",
+                            "value": "@addSeconds(utcNow(),5)"
+                        }
+                    ]
+                },
+                "runAfter": {},
+                "type": "InitializeVariable"
+            },
+            "Terminate": {
+                "inputs": {
+                    "runStatus": "Cancelled"
+                },
+                "runAfter": {
+                    "Not_completed,_return_202_with_location_and_retry-after_headers": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Terminate"
+            },
+            "Terminate_2": {
+                "inputs": {
+                    "runStatus": "Succeeded"
+                },
+                "runAfter": {
+                    "Completed_Processing_-_Return_Redirect_to_SAS_Url": [
+                        "Succeeded"
+                    ]
+                },
+                "type": "Terminate"
+            }
+        },
+        "contentVersion": "1.0.0.0",
+        "outputs": {},
+        "parameters": {
+            "$connections": {
+                "defaultValue": {},
+                "type": "Object"
+            }
+        },
+        "triggers": {
+            "manual": {
+                "inputs": {
+                    "method": "GET",
+                    "relativePath": "/{filename}",
+                    "schema": {}
+                },
+                "kind": "Http",
+                "type": "Request"
+            }
+        }
+    }
+}
+````
 ---
 
 ## Next steps
